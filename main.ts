@@ -5,26 +5,29 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const STEP = 1e6, OUT = 65536, SCAP = 256, CCAP = 64, MEM = 256, MIN = -2147483648;
-function isOp(o) {
-  return o <= 7 || (o >= 16 && o <= 30) || (o >= 32 && o <= 34) || (o >= 48 && o <= 52) || o === 64 || o === 65 || (o >= 80 && o <= 83);
-}
-function imm(o) { return o === 1 ? 1 : o === 2 ? 4 : o >= 48 && o <= 51 ? 2 : 0; }
-function eff(o) {
-  switch (o) {
-    case 1: case 2: case 82: return [0, 1];
-    case 4: return [1, 2];
-    case 5: return [2, 2];
-    case 6: return [2, 3];
-    case 7: return [3, 3];
-    case 23: case 27: case 64: return [1, 1];
-    case 65: return [2, 0];
-    case 3: case 49: case 50: case 80: case 81: case 83: return [1, 0];
-    case 16: case 17: case 18: case 19: case 20: case 21: case 22:
-    case 24: case 25: case 26: case 28: case 29: case 30:
-    case 32: case 33: case 34: return [2, 1];
-    default: return [0, 0];
-  }
-}
+// One dispatch table, built once: [immediate length, pops, pushes] per opcode,
+// null for bytes no opcode names. The old isOp()/imm()/eff() trio ran three
+// function calls per step and eff() allocated a fresh array on every instruction;
+// one table lookup replaces all of it, with identical semantics.
+const META: ReadonlyArray<readonly [number, number, number] | null> = (() => {
+  const t: Array<readonly [number, number, number] | null> = new Array(256).fill(null);
+  const set = (ops: number[], im: number, po: number, pu: number) => { for (const o of ops) t[o] = [im, po, pu]; };
+  set([0, 52], 0, 0, 0);
+  set([48, 51], 2, 0, 0);
+  set([49, 50], 2, 1, 0);
+  set([1], 1, 0, 1);
+  set([2], 4, 0, 1);
+  set([3, 80, 81, 83], 0, 1, 0);
+  set([4], 0, 1, 2);
+  set([5], 0, 2, 2);
+  set([6], 0, 2, 3);
+  set([7], 0, 3, 3);
+  set([23, 27, 64], 0, 1, 1);
+  set([65], 0, 2, 0);
+  set([82], 0, 0, 1);
+  set([16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34], 0, 2, 1);
+  return t;
+})();
 function run(code, input) {
   const n = code.length, s = new Int32Array(SCAP), r = new Int32Array(CCAP), m = new Int32Array(MEM), b = new Uint8Array(OUT);
   let t = 0, rp = 0, w = 0, cur = 0, pc = 0, st = 0;
@@ -33,11 +36,12 @@ function run(code, input) {
     if (st === STEP) return fin(10);
     if (pc < 0 || pc >= n) return fin(9);
     const op = code[pc];
-    if (!isOp(op)) return fin(5);
-    const im = imm(op);
+    const meta = META[op];
+    if (!meta) return fin(5);
+    const im = meta[0];
     if (pc + im >= n) return fin(9);
     st++;
-    const [po, pu] = eff(op);
+    const po = meta[1], pu = meta[2];
     if (t < po) return fin(2);
     if (t - po + pu > SCAP) return fin(3);
     const nx = pc + 1 + im;
